@@ -14,28 +14,18 @@ func TestFingerprintDeterministic(t *testing.T) {
 			"fieldB": "value2",
 		},
 	}
-	data, _ := json.Marshal(payload)
-
-	fp1, err := fingerprintMessage(data, []string{"sub.fieldB", "fieldA"})
+	values, err := extractMatchValues(payload, []string{"sub.fieldB", "fieldA"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	fp2, err := fingerprintMessage(data, []string{"fieldA", "sub.fieldB"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	expected := `[{"path":"fieldA","value":"value1"},{"path":"sub.fieldB","value":"value2"}]`
-
-	if fp1 != expected || fp2 != expected {
-		t.Fatalf("fingerprint mismatch\nwant: %s\ngot1: %s\ngot2: %s", expected, fp1, fp2)
+	if got, want := values, []string{"value2", "value1"}; got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("unexpected match values: %v", values)
 	}
 }
 
 func TestFingerprintMissingField(t *testing.T) {
 	payload := map[string]any{"fieldA": "value1"}
-	data, _ := json.Marshal(payload)
-
-	_, err := fingerprintMessage(data, []string{"missing"})
+	_, err := extractMatchValues(payload, []string{"missing"})
 	if err == nil {
 		t.Fatalf("expected error for missing field")
 	}
@@ -71,8 +61,8 @@ func TestMatcherReferenceAndForward(t *testing.T) {
 	}
 
 	nonMatching := map[string]any{
-		"fieldA": "value1",
-		"sub":    map[string]any{"fieldB": "other"},
+		"fieldA": "other",
+		"sub":    map[string]any{"fieldB": "different"},
 	}
 	nonBytes, _ := json.Marshal(nonMatching)
 	forward, _ = m.ShouldForward(nonBytes)

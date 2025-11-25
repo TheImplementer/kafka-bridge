@@ -25,53 +25,58 @@ func NewMatcher(routeID string, fields []string, store *store.MatchStore) *Match
 	}
 }
 
-// ProcessReference ingests a reference payload and stores its fingerprint.
+// ProcessReference ingests a reference payload and stores each extracted value.
 func (m *Matcher) ProcessReference(payload []byte) (bool, error) {
-	fp, err := fingerprintMessage(payload, m.fields)
+	var body map[string]any
+	if err := json.Unmarshal(payload, &body); err != nil {
+		return false, err
+	}
+
+	values, err := extractMatchValues(body, m.fields)
 	if err != nil {
 		return false, err
 	}
-	return m.store.Add(m.routeID, fp), nil
+
+	added := false
+	for _, v := range values {
+		if m.store.Add(m.routeID, v) {
+			added = true
+		}
+	}
+	return added, nil
 }
 
-// ShouldForward evaluates a source payload against cached fingerprints.
+// ShouldForward checks if ANY cached reference value appears anywhere in the payload.
 func (m *Matcher) ShouldForward(payload []byte) (bool, error) {
-	fp, err := fingerprintMessage(payload, m.fields)
-	if err != nil {
+	var body any
+	if err := json.Unmarshal(payload, &body); err != nil {
 		return false, err
 	}
-	return m.store.Contains(m.routeID, fp), nil
+
+	values := flattenValues(body)
+	for _, v := range values {
+		if m.store.Contains(m.routeID, v) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
-// Size returns the number of cached fingerprints for the route.
+// Size returns the number of cached values for the route.
 func (m *Matcher) Size() int {
 	return m.store.Size(m.routeID)
 }
 
-func fingerprintMessage(value []byte, fields []string) (string, error) {
-	var payload map[string]any
-	if err := json.Unmarshal(value, &payload); err != nil {
-		return "", err
-	}
-
-	entries := make([]fieldValue, len(fields))
-	for i, field := range fields {
+func extractMatchValues(payload map[string]any, fields []string) ([]string, error) {
+	out := make([]string, 0, len(fields))
+	for _, field := range fields {
 		val, err := lookupField(payload, field)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
-		entries[i] = fieldValue{Path: field, Value: val}
+		out = append(out, fmt.Sprintf("%v", val))
 	}
-
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Path < entries[j].Path
-	})
-
-	data, err := json.Marshal(entries)
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
+	return out, nil
 }
 
 func lookupField(payload map[string]any, field string) (any, error) {
@@ -96,7 +101,27 @@ func lookupField(payload map[string]any, field string) (any, error) {
 	}
 }
 
-type fieldValue struct {
-	Path  string `json:"path"`
-	Value any    `json:"value"`
+func flattenValues(v any) []string {
+	switch val := v.(type) {
+	case map[string]any:
+		var res []string
+		// deterministic iteration
+		keys := make([]string, 0, len(val))
+		for k := range val {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			res = append(res, flattenValues(val[k])...)
+		}
+		return res
+	case []any:
+		var res []string
+		for _, item := range val {
+			res = append(res, flattenValues(item)...)
+		}
+		return res
+	default:
+		return []string{fmt.Sprintf("%v", val)}
+	}
 }
