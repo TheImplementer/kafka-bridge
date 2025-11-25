@@ -34,33 +34,41 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	writerPool := kafkapkg.NewWriterPool(cfg.Brokers, cfg.ClientID)
+	sourceDialer, err := buildDialer(cfg.SourceCluster, cfg.ClientID)
+	if err != nil {
+		log.Fatalf("source dialer: %v", err)
+	}
+	bridgeDialer, err := buildDialer(cfg.BridgeCluster, cfg.ClientID)
+	if err != nil {
+		log.Fatalf("bridge dialer: %v", err)
+	}
+
+	writerPool := kafkapkg.NewWriterPool(cfg.BridgeCluster.Brokers, bridgeDialer)
 	defer func() {
 		if err := writerPool.Close(); err != nil {
 			log.Printf("close writers: %v", err)
 		}
 	}()
 
-	isnStore := store.NewISNStore()
-	if cfg.ReferenceFeed.ResetState {
-		isnStore.Reset()
-	}
+	matchStore := store.NewMatchStore()
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err := runReferenceCollector(ctx, cfg.ReferenceFeed, isnStore); err != nil && !errors.Is(err, context.Canceled) {
-			log.Printf("reference collector stopped: %v", err)
-		}
-	}()
-
 	for _, route := range cfg.Routes {
 		route := route
+		routeID := routeKey(route)
+
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := streamRoute(ctx, cfg, route, writerPool, isnStore); err != nil && !errors.Is(err, context.Canceled) {
+			if err := runReferenceCollector(ctx, cfg, route, bridgeDialer, matchStore, routeID); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("reference collector %s stopped: %v", route.DisplayName(), err)
+			}
+		}()
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := streamRoute(ctx, cfg, route, sourceDialer, writerPool, matchStore, routeID); err != nil && !errors.Is(err, context.Canceled) {
 				log.Printf("route %s stopped: %v", route.DisplayName(), err)
 			}
 		}()
@@ -69,92 +77,133 @@ func main() {
 	wg.Wait()
 }
 
-func streamRoute(ctx context.Context, cfg *config.Config, route config.Route, writers *kafkapkg.WriterPool, isnStore *store.ISNStore) error {
+func buildDialer(cluster config.ClusterConfig, clientID string) (*kafka.Dialer, error) {
+	tlsCfg, err := cluster.TLSConfigObject()
+	if err != nil {
+		return nil, err
+	}
+	return &kafka.Dialer{
+		Timeout:   10 * time.Second,
+		DualStack: true,
+		TLS:       tlsCfg,
+		ClientID:  clientID,
+	}, nil
+}
+
+func streamRoute(ctx context.Context, cfg *config.Config, route config.Route, dialer *kafka.Dialer, writers *kafkapkg.WriterPool, store *store.MatchStore, routeID string) error {
 	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers:        cfg.Brokers,
-		GroupID:        fmt.Sprintf("%s-%s", cfg.GroupID, slug(route.DisplayName())),
+		Brokers:        cfg.SourceCluster.Brokers,
+		GroupID:        fmt.Sprintf("%s-%s", cfg.SourceGroupID, slug(route.DisplayName())),
 		GroupTopics:    route.SourceTopics,
 		CommitInterval: cfg.CommitInterval,
+		StartOffset:    kafka.LastOffset,
+		Dialer:         dialer,
 	})
 	defer reader.Close()
 
-	log.Printf("route %s listening to %s -> %s", route.DisplayName(), strings.Join(route.SourceTopics, ","), route.DestinationTopic)
+	log.Printf("route %s listening to source topics %s", route.DisplayName(), strings.Join(route.SourceTopics, ","))
 	for {
-		m, err := reader.ReadMessage(ctx)
+		msg, err := reader.ReadMessage(ctx)
 		if err != nil {
 			return err
 		}
 
-		match, isnValue, err := matchesISN(m.Value, route.MatchValues, isnStore)
+		fingerprint, err := fingerprintMessage(msg.Value, route.MatchFields)
 		if err != nil {
-			log.Printf("route %s: skip invalid JSON: %v", route.DisplayName(), err)
+			log.Printf("route %s: invalid payload skipped: %v", route.DisplayName(), err)
 			continue
 		}
-		if !match {
+
+		if !store.Contains(routeID, fingerprint) {
 			continue
 		}
 
 		writer := writers.Get(route.DestinationTopic)
-		if err := writer.WriteMessages(ctx, cloneMessage(m)); err != nil {
+		if err := writer.WriteMessages(ctx, cloneMessage(msg)); err != nil {
 			log.Printf("route %s: write failed: %v", route.DisplayName(), err)
 			continue
 		}
-		log.Printf("route %s forwarded message offset %d (isn=%s) to %s", route.DisplayName(), m.Offset, isnValue, route.DestinationTopic)
+		log.Printf("route %s forwarded offset %d to %s", route.DisplayName(), msg.Offset, route.DestinationTopic)
 	}
 }
 
-func matchesISN(value []byte, allowed []string, isnStore *store.ISNStore) (bool, string, error) {
-	if len(allowed) == 0 && isnStore == nil {
-		return true, "", nil
-	}
+func runReferenceCollector(ctx context.Context, cfg *config.Config, route config.Route, dialer *kafka.Dialer, store *store.MatchStore, routeID string) error {
+	reader := kafka.NewReader(kafka.ReaderConfig{
+		Brokers:        cfg.BridgeCluster.Brokers,
+		GroupID:        fmt.Sprintf("%s-%s", cfg.ReferenceGroupID, slug(route.DisplayName())),
+		GroupTopics:    route.ReferenceTopics,
+		CommitInterval: cfg.CommitInterval,
+		StartOffset:    kafka.LastOffset,
+		Dialer:         dialer,
+	})
+	defer reader.Close()
 
-	isn, err := extractDataISN(value)
-	if err != nil {
-		return false, "", err
-	}
-
-	if len(allowed) > 0 {
-		matched := false
-		for _, candidate := range allowed {
-			if candidate == isn {
-				matched = true
-				break
-			}
+	log.Printf("reference collector %s listening to %s", route.DisplayName(), strings.Join(route.ReferenceTopics, ","))
+	for {
+		msg, err := reader.ReadMessage(ctx)
+		if err != nil {
+			return err
 		}
-		if !matched {
-			return false, isn, nil
+
+		fingerprint, err := fingerprintMessage(msg.Value, route.MatchFields)
+		if err != nil {
+			log.Printf("reference collector %s: invalid payload skipped: %v", route.DisplayName(), err)
+			continue
+		}
+
+		if store.Add(routeID, fingerprint) {
+			log.Printf("reference collector %s stored fingerprint (count=%d)", route.DisplayName(), store.Size(routeID))
 		}
 	}
-
-	if isnStore != nil && !isnStore.Contains(isn) {
-		return false, isn, nil
-	}
-
-	return true, isn, nil
 }
 
-func extractDataISN(value []byte) (string, error) {
+func fingerprintMessage(value []byte, fields []string) (string, error) {
 	var payload map[string]any
 	if err := json.Unmarshal(value, &payload); err != nil {
 		return "", err
 	}
 
-	data, ok := payload["data"].(map[string]any)
-	if !ok {
-		return "", errors.New("missing data object")
+	entries := make([]fieldValue, len(fields))
+	for i, field := range fields {
+		val, err := lookupField(payload, field)
+		if err != nil {
+			return "", err
+		}
+		entries[i] = fieldValue{Path: field, Value: val}
 	}
 
-	raw, ok := data["isn"]
-	if !ok {
-		return "", errors.New("data.isn not found")
+	data, err := json.Marshal(entries)
+	if err != nil {
+		return "", err
 	}
-
-	return fmt.Sprintf("%v", raw), nil
+	return string(data), nil
 }
 
-func slug(in string) string {
-	replacer := strings.NewReplacer(" ", "-", "/", "-", "\\", "-", ".", "-")
-	return replacer.Replace(strings.ToLower(in))
+func lookupField(payload map[string]any, field string) (any, error) {
+	parts := strings.Split(field, ".")
+	switch len(parts) {
+	case 1:
+		if val, ok := payload[parts[0]]; ok {
+			return val, nil
+		}
+		return nil, fmt.Errorf("field %s not found", field)
+	case 2:
+		child, ok := payload[parts[0]].(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("field %s missing nested object", field)
+		}
+		if val, ok := child[parts[1]]; ok {
+			return val, nil
+		}
+		return nil, fmt.Errorf("field %s not found", field)
+	default:
+		return nil, fmt.Errorf("field %s depth unsupported", field)
+	}
+}
+
+type fieldValue struct {
+	Path  string `json:"path"`
+	Value any    `json:"value"`
 }
 
 func cloneMessage(m kafka.Message) kafka.Message {
@@ -168,50 +217,11 @@ func cloneMessage(m kafka.Message) kafka.Message {
 	return cloned
 }
 
-func runReferenceCollector(ctx context.Context, feed config.ReferenceFeed, store *store.ISNStore) error {
-	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers:        feed.Brokers,
-		GroupID:        feed.GroupID,
-		GroupTopics:    feed.Topics,
-		CommitInterval: 5 * time.Second,
-	})
-	defer reader.Close()
-
-	log.Printf("reference collector listening to %s", strings.Join(feed.Topics, ","))
-	for {
-		msg, err := reader.ReadMessage(ctx)
-		if err != nil {
-			return err
-		}
-
-		isn, err := extractReferenceISN(msg.Value)
-		if err != nil {
-			log.Printf("reference collector: invalid JSON skipped: %v", err)
-			continue
-		}
-
-		if added := store.Add(isn); added {
-			log.Printf("reference collector: added isn=%s (total=%d)", isn, store.Size())
-		}
-	}
+func slug(in string) string {
+	replacer := strings.NewReplacer(" ", "-", "/", "-", "\\", "-", ".", "-")
+	return replacer.Replace(strings.ToLower(in))
 }
 
-func extractReferenceISN(value []byte) (string, error) {
-	var payload map[string]any
-	if err := json.Unmarshal(value, &payload); err != nil {
-		return "", err
-	}
-
-	if raw, ok := payload["isn"]; ok {
-		return fmt.Sprintf("%v", raw), nil
-	}
-
-	// fall back to nested structure for consistency
-	if data, ok := payload["data"].(map[string]any); ok {
-		if raw, ok := data["isn"]; ok {
-			return fmt.Sprintf("%v", raw), nil
-		}
-	}
-
-	return "", errors.New("isn not found")
+func routeKey(route config.Route) string {
+	return slug(route.DisplayName())
 }

@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-The repo hosts a single Go service that filters Kafka traffic. Entrypoint code lives in `cmd/filter/`, reusable logic in `internal/` (`config` for YAML parsing, `kafka` for writer pooling, `store` for cached ISNs). Runtime configuration sits under `config/` with `config.example.yaml` as the template. Add helper docs (like runbooks) under project root; keep binaries out of source control by writing them to `bin/` or `/tmp`.
+The repo hosts a single Go service that filters Kafka traffic. Entrypoint code lives in `cmd/filter/`, reusable logic in `internal/` (`config` for YAML parsing + TLS helpers, `kafka` for writer pooling, `store` for cached match fingerprints). Runtime configuration sits under `config/` with `config.example.yaml` as the template. Add helper docs (like runbooks) under project root; keep binaries out of source control by writing them to `bin/` or `/tmp`.
 
 ## Build, Test, and Development Commands
 - `go run ./cmd/filter -config config/config.yaml` – start the bridge locally; respects Ctrl+C/SIGTERM.
@@ -19,4 +19,4 @@ Place tests next to implementation files (e.g., `internal/store/store_test.go`).
 Prefer Conventional Commits (`feat: add reference feed`). Keep subject lines ≤72 chars, wrap bodies at 100 chars, and mention Jira/GitHub IDs when relevant. PRs should summarize the scenario, list configs touched, and paste log excerpts demonstrating filtered traffic. Request review from another Go maintainer; merge only after green CI and at least one approval.
 
 ## Security & Configuration Tips
-Store secrets (broker creds, SASL configs) in environment variables or `.env.local` (gitignored). `config/config.yaml` should reference Vault/secret managers rather than inline passwords. When sharing sample configs, redact any tenant info. If the reference feed contains sensitive identifiers, ensure downstream logs obfuscate them before exporting to shared systems.
+Store TLS artifacts (CA, client cert, key) outside the repo and point `sourceCluster.tls` to their locations. Use environment variables or secret managers for broker credentials and avoid committing raw PEM files. When sharing sample configs, redact tenant info and reference Vault paths. If the reference feeds contain sensitive identifiers, keep logs on the lowest verbosity in shared environments.

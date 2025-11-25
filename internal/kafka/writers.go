@@ -12,18 +12,14 @@ type WriterPool struct {
 	mu      sync.Mutex
 	writers map[string]*kafka.Writer
 	brokers []string
-	client  string
+	dialer  *kafka.Dialer
 }
 
-// NewWriterPool builds a writer pool for the provided brokers and client ID.
-func NewWriterPool(brokers []string, clientID string) *WriterPool {
-	return newWriterPool(brokers, clientID)
-}
-
-func newWriterPool(brokers []string, clientID string) *WriterPool {
+// NewWriterPool builds a writer pool for the provided brokers and dialer.
+func NewWriterPool(brokers []string, dialer *kafka.Dialer) *WriterPool {
 	return &WriterPool{
 		brokers: brokers,
-		client:  clientID,
+		dialer:  dialer,
 		writers: make(map[string]*kafka.Writer),
 	}
 }
@@ -43,11 +39,7 @@ func (p *WriterPool) Get(topic string) *kafka.Writer {
 		Balancer:     &kafka.LeastBytes{},
 		RequiredAcks: kafka.RequireAll,
 		Async:        false,
-	}
-	if p.client != "" {
-		writer.Transport = &kafka.Transport{
-			ClientID: p.client,
-		}
+		Dialer:       p.dialer,
 	}
 
 	p.writers[topic] = writer

@@ -1,33 +1,42 @@
 ## Kafka Topic Filter Tool
 
-This Go utility consumes JSON payloads from one or more Kafka topics, inspects the `data.isn` field, and forwards matching records to configured destination topics. It also subscribes to a secondary broker to ingest authoritative `isn` values and uses that live cache to decide which messages should be forwarded.
+This Go utility consumes JSON payloads from one Kafka cluster (secured with mTLS), listens to reference topics and writes to destination topics on a second cluster, and forwards a source message only when its field values match any profile captured from the reference feeds.
 
 ### Requirements
 
 - Go 1.21+
-- Access to the Kafka brokers you want to bridge
+- Two reachable Kafka clusters (source + bridge/reference)
+- Client certificates for the source cluster (PEM files)
 
 ### Configure
 
 1. Copy `config/config.example.yaml` to `config/config.yaml`.
 2. Adjust the file:
-   - `brokers`: list of Kafka bootstrap servers (e.g., `localhost:9092`).
-   - `groupId` / `clientId`: identifiers for the consumer group and producer client.
-   - `referenceFeed`: connection details for the broker that provides valid `isn` values. Supply `brokers`, `groupId`, and `topics`. Set `resetState: true` to clear any previously cached identifiers on startup.
-   - `routes`: each block declares `sourceTopics`, a `destinationTopic`, and optional `matchValues` (static allowlisted `data.isn` entries). Every message is additionally filtered against the cached `isn` list from the reference feed.
+   - `sourceCluster`: brokers plus TLS certs/keys for the mTLS-protected cluster hosting the source topics.
+   - `bridgeCluster`: brokers (and optional TLS) for the cluster hosting reference feeds and destination topics.
+   - `clientId`, `sourceGroupId`, `referenceGroupId`: identifiers reused across consumers and producers.
+   - `routes`: each route declares source topics, destination topic, the reference feed topics tied to that source, and `matchFields` (field paths such as `fieldA` or `subObj.fieldB`) that are extracted from both reference and source payloads for matching.
 
 Example snippet:
 
 ```yaml
-referenceFeed:
-  brokers: ["other-broker:9093"]
-  groupId: bridge-reference
-  topics: ["reference-topic"]
+sourceCluster:
+  brokers: ["source-cluster:9094"]
+  tls:
+    caFile: path/to/ca.pem
+    certFile: path/to/client-cert.pem
+    keyFile: path/to/client-key.pem
+bridgeCluster:
+  brokers: ["bridge-cluster:9092"]
+clientId: kafka-filter
+sourceGroupId: filter-source
+referenceGroupId: filter-reference
 routes:
-  - name: test route
-    sourceTopics: ["test-topic"]
-    destinationTopic: filtered-test-topic
-    matchValues: ["alpha", "beta"]
+  - name: route-a
+    sourceTopics: ["source-topic-a"]
+    destinationTopic: filtered-topic-a
+    referenceTopics: ["reference-feed-topic-a", "reference-feed-topic-b"]
+    matchFields: ["fieldA", "subObj.fieldB"]
 ```
 
 ### Run
@@ -36,7 +45,7 @@ routes:
 go run ./cmd/filter -config config/config.yaml
 ```
 
-The process listens for `SIGINT`/`SIGTERM` and shuts down gracefully. Logs show which route forwarded which offsets, making it easy to verify matches.
+Logs indicate which reference collector stored fingerprints and which routes forwarded messages. All consumers start from the latest offsets and honor Ctrl+C/SIGTERM for graceful shutdowns.
 
 ### Build
 
@@ -44,4 +53,4 @@ The process listens for `SIGINT`/`SIGTERM` and shuts down gracefully. Logs show 
 go build -o bin/kafka-filter ./cmd/filter
 ```
 
-Ship the resulting binary alongside your `config.yaml` for deployments (e.g., Docker or systemd). Use `go test ./...` to execute unit tests whenever they are added.
+Ship the resulting binary plus `config.yaml` with your deployment tooling. Run `go test ./...` to execute future unit tests once the local Go toolchain is fixed.

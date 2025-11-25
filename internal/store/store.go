@@ -2,48 +2,48 @@ package store
 
 import "sync"
 
-// ISNStore keeps the latest ISN values seen on the reference feed.
-type ISNStore struct {
+// MatchStore keeps allowed payload fingerprints per route.
+type MatchStore struct {
 	mu     sync.RWMutex
-	values map[string]struct{}
+	values map[string]map[string]struct{}
 }
 
-// NewISNStore builds an empty store.
-func NewISNStore() *ISNStore {
-	return &ISNStore{
-		values: make(map[string]struct{}),
-	}
+// NewMatchStore creates an empty store.
+func NewMatchStore() *MatchStore {
+	return &MatchStore{values: make(map[string]map[string]struct{})}
 }
 
-// Add records the provided identifier and returns true when it was newly inserted.
-func (s *ISNStore) Add(isn string) bool {
+// Add inserts the fingerprint for the given route.
+func (s *MatchStore) Add(route string, fingerprint string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, exists := s.values[isn]; exists {
+	routeMap, ok := s.values[route]
+	if !ok {
+		routeMap = make(map[string]struct{})
+		s.values[route] = routeMap
+	}
+	if _, exists := routeMap[fingerprint]; exists {
 		return false
 	}
-	s.values[isn] = struct{}{}
+	routeMap[fingerprint] = struct{}{}
 	return true
 }
 
-// Contains reports whether the identifier has been observed.
-func (s *ISNStore) Contains(isn string) bool {
+// Contains reports whether a fingerprint exists for the route.
+func (s *MatchStore) Contains(route string, fingerprint string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	_, ok := s.values[isn]
-	return ok
+	routeMap, ok := s.values[route]
+	if !ok {
+		return false
+	}
+	_, exists := routeMap[fingerprint]
+	return exists
 }
 
-// Reset clears the store.
-func (s *ISNStore) Reset() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.values = make(map[string]struct{})
-}
-
-// Size returns the current number of stored identifiers.
-func (s *ISNStore) Size() int {
+// Size returns the number of fingerprints stored for the route.
+func (s *MatchStore) Size(route string) int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return len(s.values)
+	return len(s.values[route])
 }
