@@ -2,14 +2,12 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
-	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -18,6 +16,7 @@ import (
 	"github.com/segmentio/kafka-go"
 
 	"kafka-bridge/internal/config"
+	"kafka-bridge/internal/engine"
 	kafkapkg "kafka-bridge/internal/kafka"
 	"kafka-bridge/internal/store"
 )
@@ -57,11 +56,12 @@ func main() {
 	for _, route := range cfg.Routes {
 		route := route
 		routeID := routeKey(route)
+		matcher := engine.NewMatcher(routeID, route.MatchFields, matchStore)
 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := runReferenceCollector(ctx, cfg, route, bridgeDialer, matchStore, routeID); err != nil && !errors.Is(err, context.Canceled) {
+			if err := runReferenceCollector(ctx, cfg, route, bridgeDialer, matcher); err != nil && !errors.Is(err, context.Canceled) {
 				log.Printf("reference collector %s stopped: %v", route.DisplayName(), err)
 			}
 		}()
@@ -69,7 +69,7 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := streamRoute(ctx, cfg, route, sourceDialer, writerPool, matchStore, routeID); err != nil && !errors.Is(err, context.Canceled) {
+			if err := streamRoute(ctx, cfg, route, sourceDialer, writerPool, matcher); err != nil && !errors.Is(err, context.Canceled) {
 				log.Printf("route %s stopped: %v", route.DisplayName(), err)
 			}
 		}()
@@ -91,7 +91,7 @@ func buildDialer(cluster config.ClusterConfig, clientID string) (*kafka.Dialer, 
 	}, nil
 }
 
-func streamRoute(ctx context.Context, cfg *config.Config, route config.Route, dialer *kafka.Dialer, writers *kafkapkg.WriterPool, store *store.MatchStore, routeID string) error {
+func streamRoute(ctx context.Context, cfg *config.Config, route config.Route, dialer *kafka.Dialer, writers *kafkapkg.WriterPool, matcher *engine.Matcher) error {
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:        cfg.SourceCluster.Brokers,
 		GroupID:        fmt.Sprintf("%s-%s", cfg.SourceGroupID, slug(route.DisplayName())),
@@ -109,13 +109,12 @@ func streamRoute(ctx context.Context, cfg *config.Config, route config.Route, di
 			return err
 		}
 
-		fingerprint, err := fingerprintMessage(msg.Value, route.MatchFields)
+		match, err := matcher.ShouldForward(msg.Value)
 		if err != nil {
 			log.Printf("route %s: invalid payload skipped: %v", route.DisplayName(), err)
 			continue
 		}
-
-		if !store.Contains(routeID, fingerprint) {
+		if !match {
 			continue
 		}
 
@@ -128,7 +127,7 @@ func streamRoute(ctx context.Context, cfg *config.Config, route config.Route, di
 	}
 }
 
-func runReferenceCollector(ctx context.Context, cfg *config.Config, route config.Route, dialer *kafka.Dialer, store *store.MatchStore, routeID string) error {
+func runReferenceCollector(ctx context.Context, cfg *config.Config, route config.Route, dialer *kafka.Dialer, matcher *engine.Matcher) error {
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:        cfg.BridgeCluster.Brokers,
 		GroupID:        fmt.Sprintf("%s-%s", cfg.ReferenceGroupID, slug(route.DisplayName())),
@@ -146,69 +145,16 @@ func runReferenceCollector(ctx context.Context, cfg *config.Config, route config
 			return err
 		}
 
-		fingerprint, err := fingerprintMessage(msg.Value, route.MatchFields)
+		added, err := matcher.ProcessReference(msg.Value)
 		if err != nil {
 			log.Printf("reference collector %s: invalid payload skipped: %v", route.DisplayName(), err)
 			continue
 		}
 
-		if store.Add(routeID, fingerprint) {
-			log.Printf("reference collector %s stored fingerprint (count=%d)", route.DisplayName(), store.Size(routeID))
+		if added {
+			log.Printf("reference collector %s stored fingerprint (count=%d)", route.DisplayName(), matcher.Size())
 		}
 	}
-}
-
-func fingerprintMessage(value []byte, fields []string) (string, error) {
-	var payload map[string]any
-	if err := json.Unmarshal(value, &payload); err != nil {
-		return "", err
-	}
-
-	entries := make([]fieldValue, len(fields))
-	for i, field := range fields {
-		val, err := lookupField(payload, field)
-		if err != nil {
-			return "", err
-		}
-		entries[i] = fieldValue{Path: field, Value: val}
-	}
-
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Path < entries[j].Path
-	})
-
-	data, err := json.Marshal(entries)
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
-}
-
-func lookupField(payload map[string]any, field string) (any, error) {
-	parts := strings.Split(field, ".")
-	switch len(parts) {
-	case 1:
-		if val, ok := payload[parts[0]]; ok {
-			return val, nil
-		}
-		return nil, fmt.Errorf("field %s not found", field)
-	case 2:
-		child, ok := payload[parts[0]].(map[string]any)
-		if !ok {
-			return nil, fmt.Errorf("field %s missing nested object", field)
-		}
-		if val, ok := child[parts[1]]; ok {
-			return val, nil
-		}
-		return nil, fmt.Errorf("field %s not found", field)
-	default:
-		return nil, fmt.Errorf("field %s depth unsupported", field)
-	}
-}
-
-type fieldValue struct {
-	Path  string `json:"path"`
-	Value any    `json:"value"`
 }
 
 func cloneMessage(m kafka.Message) kafka.Message {
