@@ -16,6 +16,7 @@ This Go utility consumes JSON payloads from one Kafka cluster (secured with mTLS
    - `bridgeCluster`: brokers (and optional TLS) for the cluster hosting reference feeds and destination topics.
    - `clientId`, `sourceGroupId`, `referenceGroupId`: identifiers reused across consumers and producers.
    - `http`: optional admin server, `listenAddr` defaults to `:8080`. POST reference payloads here instead of (or in addition to) consuming them from reference topics.
+   - `storage`: optional persistence; set `path` (e.g., `/var/lib/kafka-bridge/cache.json`) and `flushInterval` to keep cached reference values across restarts.
    - `routes`: each route declares source topics, destination topic, the reference feed topics tied to that source, and `matchFields` (field paths such as `fieldA` or `subObj.fieldB`) that are extracted from both reference and source payloads for matching.
 
 Example snippet:
@@ -32,6 +33,9 @@ bridgeCluster:
 clientId: kafka-filter
 sourceGroupId: filter-source
 referenceGroupId: filter-reference
+storage:
+  path: /var/lib/kafka-bridge/cache.json
+  flushInterval: 10s
 routes:
   - name: route-a
     sourceTopics: ["source-topic-a"]
@@ -88,3 +92,5 @@ kubectl apply -f k8s/deployment.yaml
 ```
 
 The HTTP admin endpoint is exposed on port 8080 via the `Service` and accepts POSTs at `/reference/{routeId}` to inject reference payloads.
+
+Persist the cache by mounting a writable volume to `storage.path` (see the example config map and deployment). An `emptyDir` works for single-pod lifetimes; use a PVC for reuse across restarts.

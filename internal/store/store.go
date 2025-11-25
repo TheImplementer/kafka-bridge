@@ -47,3 +47,42 @@ func (s *MatchStore) Size(route string) int {
 	defer s.mu.RUnlock()
 	return len(s.values[route])
 }
+
+// SaveSnapshot writes the current snapshot to disk.
+func (s *MatchStore) SaveSnapshot(path string) error {
+	return Save(path, s.Snapshot())
+}
+
+// LoadSnapshot reads a snapshot from disk.
+func (s *MatchStore) LoadSnapshot(path string) (map[string][]string, error) {
+	return Load(path)
+}
+
+// Snapshot returns a copy of all values keyed by route.
+func (s *MatchStore) Snapshot() map[string][]string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string][]string, len(s.values))
+	for route, vals := range s.values {
+		list := make([]string, 0, len(vals))
+		for v := range vals {
+			list = append(list, v)
+		}
+		out[route] = list
+	}
+	return out
+}
+
+// Load replaces the store contents with the provided snapshot.
+func (s *MatchStore) Load(snapshot map[string][]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.values = make(map[string]map[string]struct{}, len(snapshot))
+	for route, vals := range snapshot {
+		routeMap := make(map[string]struct{}, len(vals))
+		for _, v := range vals {
+			routeMap[v] = struct{}{}
+		}
+		s.values[route] = routeMap
+	}
+}

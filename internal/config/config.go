@@ -24,6 +24,7 @@ type Config struct {
 	CommitInterval   time.Duration `yaml:"commitInterval"`
 	Routes           []Route       `yaml:"routes"`
 	HTTP             HTTPServer    `yaml:"http"`
+	Storage          Storage       `yaml:"storage"`
 }
 
 // ClusterConfig holds broker and TLS settings.
@@ -52,6 +53,12 @@ type Route struct {
 // HTTPServer configures the optional admin HTTP listener.
 type HTTPServer struct {
 	ListenAddr string `yaml:"listenAddr"`
+}
+
+// Storage configures optional on-disk persistence for cached values.
+type Storage struct {
+	Path          string        `yaml:"path"`
+	FlushInterval time.Duration `yaml:"flushInterval"`
 }
 
 // Load parses the YAML configuration.
@@ -104,6 +111,9 @@ func (c *Config) Validate() error {
 	}
 	if c.HTTP.ListenAddr == "" {
 		c.HTTP.ListenAddr = ":8080"
+	}
+	if c.Storage.FlushInterval == 0 {
+		c.Storage.FlushInterval = 10 * time.Second
 	}
 	return nil
 }

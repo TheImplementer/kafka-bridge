@@ -60,6 +60,13 @@ func main() {
 		matchers[routeID] = engine.NewMatcher(routeID, route.MatchFields, matchStore)
 	}
 
+	if cfg.Storage.Path != "" {
+		if err := loadSnapshot(cfg.Storage.Path, matchStore); err != nil {
+			log.Printf("warn: failed to load snapshot: %v", err)
+		}
+		startSnapshotWriter(ctx, cfg.Storage.Path, cfg.Storage.FlushInterval, matchStore)
+	}
+
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -191,6 +198,36 @@ func slug(in string) string {
 
 func routeKey(route config.Route) string {
 	return slug(route.DisplayName())
+}
+
+func loadSnapshot(path string, store *store.MatchStore) error {
+	snap, err := store.LoadSnapshot(path)
+	if err != nil {
+		return err
+	}
+	store.Load(snap)
+	return nil
+}
+
+func startSnapshotWriter(ctx context.Context, path string, interval time.Duration, store *store.MatchStore) {
+	if interval <= 0 {
+		interval = 10 * time.Second
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				_ = store.SaveSnapshot(path)
+				return
+			case <-ticker.C:
+				if err := store.SaveSnapshot(path); err != nil {
+					log.Printf("warn: snapshot save failed: %v", err)
+				}
+			}
+		}
+	}()
 }
 
 func startHTTPServer(ctx context.Context, addr string, matchers map[string]*engine.Matcher) error {

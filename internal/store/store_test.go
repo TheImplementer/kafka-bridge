@@ -20,4 +20,12 @@ func TestMatchStorePerRoute(t *testing.T) {
 	if size := s.Size("routeA"); size != 1 {
 		t.Fatalf("expected size 1 for routeA, got %d", size)
 	}
+
+	// snapshot and reload
+	snap := s.Snapshot()
+	clone := NewMatchStore()
+	clone.Load(snap)
+	if !clone.Contains("routeA", "fp1") {
+		t.Fatalf("expected cloned store to contain fp1")
+	}
 }

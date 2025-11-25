@@ -8,7 +8,7 @@ The repo hosts a single Go service that filters Kafka traffic. Entrypoint code l
 - `go build -o bin/kafka-filter ./cmd/filter` – produce a static binary for deployment.
 - `go test ./...` – run future unit tests (currently none) and catch compile errors.
 - `golangci-lint run` – optional but recommended; configure via `.golangci.yml` when added.
-- `docker build -t your-registry/kafka-bridge:latest .` – build container image; use `k8s/` manifests for deployment.
+- `docker build -t your-registry/kafka-bridge:latest .` – build container image; use `k8s/` manifests for deployment. Mount a writable volume to `storage.path` to persist cached reference values.
 
 ## Coding Style & Naming Conventions
 Use Go 1.21. Follow `gofmt` formatting and keep files ASCII. Package names stay lowercase and short (`store`, `kafka`). Public structs/functions need doc comments when exported outside a package. Topic, consumer-group, and config identifiers in examples should stay kebab-case (`bridge-reference`). Avoid global state; prefer context-aware functions for goroutines handling Kafka IO.
