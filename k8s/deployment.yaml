@@ -31,6 +31,9 @@ spec:
             - name: tls
               mountPath: /etc/kafka-bridge/tls
               readOnly: true
+            - name: cache
+              mountPath: /var/lib/kafka-bridge
+              readOnly: false
           resources:
             requests:
               cpu: 100m
@@ -49,6 +52,9 @@ spec:
           secret:
             secretName: kafka-bridge-tls
             optional: true
+        - name: cache
+          persistentVolumeClaim:
+            claimName: kafka-bridge-cache
 ---
 apiVersion: v1
 kind: Service
