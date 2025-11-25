@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-bridge
+  labels:
+    app: kafka-bridge
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka-bridge
+  template:
+    metadata:
+      labels:
+        app: kafka-bridge
+    spec:
+      containers:
+        - name: kafka-bridge
+          image: your-registry/kafka-bridge:latest
+          imagePullPolicy: IfNotPresent
+          args: ["-config", "/etc/kafka-bridge/config.yaml"]
+          ports:
+            - name: http
+              containerPort: 8080
+          volumeMounts:
+            - name: config
+              mountPath: /etc/kafka-bridge/config.yaml
+              subPath: config.yaml
+              readOnly: true
+            - name: tls
+              mountPath: /etc/kafka-bridge/tls
+              readOnly: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: config
+          configMap:
+            name: kafka-bridge-config
+            items:
+              - key: config.yaml
+                path: config.yaml
+        - name: tls
+          secret:
+            secretName: kafka-bridge-tls
+            optional: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-bridge
+  labels:
+    app: kafka-bridge
+  namespace: default
+spec:
+  selector:
+    app: kafka-bridge
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP

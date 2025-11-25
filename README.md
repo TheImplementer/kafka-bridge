@@ -66,4 +66,25 @@ Logs indicate which reference collector stored fingerprints and which routes for
 go build -o bin/kafka-filter ./cmd/filter
 ```
 
-Ship the resulting binary plus `config.yaml` with your deployment tooling. Run `go test ./...` to execute future unit tests once the local Go toolchain is fixed.
+### Containerize
+
+```bash
+docker build -t your-registry/kafka-bridge:latest .
+docker push your-registry/kafka-bridge:latest
+```
+
+The Dockerfile is multi-stage (static binary on distroless) and copies `config/config.example.yaml` to `/etc/kafka-bridge/config.yaml` by default. Override with your own config via a volume or `-config` argument.
+
+### Deploy to Kubernetes
+
+1. Edit `k8s/configmap.yaml` to reflect your clusters, topics, and TLS file paths.
+2. Create a TLS secret with your PEM files (or use `k8s/secret-tls-example.yaml` as a template).
+3. Apply manifests:
+
+```bash
+kubectl apply -f k8s/configmap.yaml
+kubectl apply -f k8s/secret-tls-example.yaml # replace with your real secret
+kubectl apply -f k8s/deployment.yaml
+```
+
+The HTTP admin endpoint is exposed on port 8080 via the `Service` and accepts POSTs at `/reference/{routeId}` to inject reference payloads.

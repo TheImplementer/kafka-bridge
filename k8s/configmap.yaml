@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kafka-bridge-config
+  labels:
+    app: kafka-bridge
+  namespace: default
+
+data:
+  config.yaml: |
+    sourceCluster:
+      brokers: ["source-cluster:9094"]
+      tls:
+        caFile: /etc/kafka-bridge/tls/ca.pem
+        certFile: /etc/kafka-bridge/tls/client-cert.pem
+        keyFile: /etc/kafka-bridge/tls/client-key.pem
+    bridgeCluster:
+      brokers: ["bridge-cluster:9092"]
+    clientId: kafka-filter
+    sourceGroupId: filter-source
+    referenceGroupId: filter-reference
+    commitInterval: 2s
+    http:
+      listenAddr: ":8080"
+    routes:
+      - name: route-a
+        sourceTopics: ["source-topic-a"]
+        destinationTopic: filtered-topic-a
+        referenceTopics: ["reference-feed-topic-a", "reference-feed-topic-b"]
+        matchFields: ["fieldA", "subObj.fieldB"]
