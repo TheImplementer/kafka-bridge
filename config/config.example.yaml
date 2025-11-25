@@ -1,0 +1,13 @@
+brokers:
+  - localhost:9092
+groupId: bridge-filter
+clientId: bridge-filter-local
+commitInterval: 2s
+routes:
+  - name: test filter
+    sourceTopics:
+      - test-topic
+    destinationTopic: filtered-test-topic
+    matchValues:
+      - 12345
+      - 67890
