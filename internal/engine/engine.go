@@ -77,6 +77,17 @@ func (m *Matcher) Size() int {
 	return m.store.Size(m.routeID)
 }
 
+// AddValues inserts raw reference values (used by HTTP injection).
+func (m *Matcher) AddValues(values []string) bool {
+	added := false
+	for _, v := range values {
+		if m.store.Add(m.routeID, v) {
+			added = true
+		}
+	}
+	return added
+}
+
 func extractMatchValues(payload map[string]any, fields []string) ([]string, error) {
 	out := make([]string, 0, len(fields))
 	for _, field := range fields {

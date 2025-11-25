@@ -77,4 +77,13 @@ func TestMatcherReferenceAndForward(t *testing.T) {
 	if forward {
 		t.Fatalf("expected non-matching source to be blocked")
 	}
+
+	// manual add should allow matching when value appears anywhere
+	if added := m.AddValues([]string{"other"}); !added {
+		t.Fatalf("expected manual add to succeed")
+	}
+	forward, _ = m.ShouldForward(nonBytes)
+	if !forward {
+		t.Fatalf("expected manual value to allow forwarding when present in payload")
+	}
 }

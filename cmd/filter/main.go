@@ -2,10 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -251,27 +251,22 @@ func startHTTPServer(ctx context.Context, addr string, matchers map[string]*engi
 			http.Error(w, "route id required", http.StatusBadRequest)
 			return
 		}
-		topic := r.URL.Query().Get("topic")
-		if topic == "" {
-			http.Error(w, "topic query param required", http.StatusBadRequest)
-			return
-		}
 		matcher, ok := matchers[routeID]
 		if !ok {
 			http.Error(w, "route not found", http.StatusNotFound)
 			return
 		}
 		defer r.Body.Close()
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			http.Error(w, "read body failed", http.StatusBadRequest)
+		var values []string
+		if err := json.NewDecoder(r.Body).Decode(&values); err != nil {
+			http.Error(w, "invalid JSON array of strings", http.StatusBadRequest)
 			return
 		}
-		added, err := matcher.ProcessReference(topic, body)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("invalid payload: %v", err), http.StatusBadRequest)
+		if len(values) == 0 {
+			http.Error(w, "empty payload", http.StatusBadRequest)
 			return
 		}
+		added := matcher.AddValues(values)
 		status := http.StatusOK
 		if added {
 			status = http.StatusCreated
